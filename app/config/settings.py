@@ -1,0 +1,6 @@
+import os
+
+TOKEN = "svvikhfo7KonGCV"
+AES_KEY = "OUYuidmBQa5XWr3ngBi7lXFj6PPM6cVIwFMk9vKJUfG"
+CORP_ID = "ww2889b92a919d6de7"
+QWEN_API_KEY = "sk-a74ccef85bab443db01407504119889a"
