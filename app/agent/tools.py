@@ -32,12 +32,11 @@ tools = [
 ]
 
 
-def call_tool(tool_call):
-    name = tool_call.function.name
-    args = eval(tool_call.function.arguments)
-
+def call_tool(name: str, args: dict):
     if name == "get_slots":
         return get_slots()
 
     if name == "create_appointment":
         return create_appointment(**args)
+
+    return {"error": f"unknown tool: {name}"}
