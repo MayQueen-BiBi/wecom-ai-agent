@@ -1,5 +1,6 @@
 from wechatpy.enterprise.crypto import WeChatCrypto
-from app.config.settings import TOKEN, AES_KEY, CORP_ID
+from app.config.settings import TOKEN, AES_KEY, CORP_ID, validate_settings
+validate_settings()
 crypto = WeChatCrypto(TOKEN, AES_KEY, CORP_ID)
 import time
 import xml.etree.ElementTree as ET

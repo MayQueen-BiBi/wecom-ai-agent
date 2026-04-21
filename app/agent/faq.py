@@ -1,3 +1,6 @@
+from typing import Optional
+
+
 FAQ_KB = [
     {
         "keywords": ["种植牙", "种牙", "缺牙"],
@@ -26,7 +29,7 @@ FAQ_KB = [
 ]
 
 
-def faq_search(user_text: str) -> str | None:
+def faq_search(user_text: str) -> Optional[str]:
     text = user_text.lower()
     for item in FAQ_KB:
         if any(keyword in text for keyword in item["keywords"]):

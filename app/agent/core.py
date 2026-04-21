@@ -1,5 +1,6 @@
 import json
 import requests
+from typing import Optional
 from app.agent.faq import faq_search
 from app.agent.risk_guard import needs_handoff, risk_block_reply
 from app.agent.session import get_session, reset_appointment
@@ -15,14 +16,14 @@ def _is_appointment_intent(user_msg: str) -> bool:
     return any(k in user_msg for k in keywords)
 
 
-def _extract_phone(user_msg: str) -> str | None:
+def _extract_phone(user_msg: str) -> Optional[str]:
     digits = "".join(ch for ch in user_msg if ch.isdigit())
     if len(digits) == 11 and digits.startswith("1"):
         return digits
     return None
 
 
-def _extract_time(user_msg: str) -> str | None:
+def _extract_time(user_msg: str) -> Optional[str]:
     if ":" in user_msg:
         for token in user_msg.split():
             if ":" in token:
