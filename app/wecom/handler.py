@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from wechatpy.enterprise.crypto import WeChatCrypto
 from app.config.settings import TOKEN, AES_KEY, CORP_ID
 from app.wecom.crypto import decrypt_msg, encrypt_msg
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 @router.post("/wecom/callback")
 async def wecom_callback(request: Request):
-    body = await request.body()
+    body = (await request.body()).decode("utf-8")
 
     msg_signature = request.query_params.get("msg_signature")
     timestamp = request.query_params.get("timestamp")
@@ -46,8 +46,6 @@ async def verify(request: Request):
             nonce,
             echostr
         )
-        # ⚠️ 核心：必须原样返回
-        return PlainTextResponse(echo_str)
-
+        return PlainTextResponse(echo_str)  # ⚠️ 必须纯文本返回
     except Exception as e:
         return Response(content=str(e), status_code=400)
