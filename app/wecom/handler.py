@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse
+from wechatpy.enterprise.crypto import WeChatCrypto
+from app.config.settings import TOKEN, AES_KEY, CORP_ID
 from app.wecom.crypto import decrypt_msg, encrypt_msg
 from app.agent.core import run_agent
 import logging
@@ -28,7 +30,21 @@ async def wecom_callback(request: Request):
     return encrypt_msg(reply, xml, nonce, timestamp)
 
 
+crypto = WeChatCrypto(TOKEN, AES_KEY, CORP_ID)
+
 @router.get("/wecom/callback")
 async def verify(request: Request):
-    echostr = request.query_params.get("echostr", "")
-    return PlainTextResponse(echostr)
+    msg_signature = request.query_params.get("msg_signature")
+    timestamp = request.query_params.get("timestamp")
+    nonce = request.query_params.get("nonce")
+    echostr = request.query_params.get("echostr")
+
+    # 👉 关键：企业微信要求解密 echostr
+    echo = crypto.decrypt_message(
+        echostr,
+        msg_signature,
+        timestamp,
+        nonce
+    )
+
+    return PlainTextResponse(echo)
