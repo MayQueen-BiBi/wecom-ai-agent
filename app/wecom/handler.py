@@ -30,22 +30,28 @@ async def wecom_callback(request: Request):
     return encrypt_msg(reply, xml, nonce, timestamp)
 
 
+# @router.get("/wecom/callback")
+# async def verify(request: Request):
+#     msg_signature = request.query_params.get("msg_signature")
+#     timestamp = request.query_params.get("timestamp")
+#     nonce = request.query_params.get("nonce")
+#     echostr = request.query_params.get("echostr")
+
+#     crypto = WeChatCrypto(TOKEN, AES_KEY, CORP_ID)
+
+#     try:
+#         echo_str = crypto.check_signature(
+#             msg_signature,
+#             timestamp,
+#             nonce,
+#             echostr
+#         )
+#         return PlainTextResponse(echo_str)  # ⚠️ 必须纯文本返回
+#     except Exception as e:
+#         return Response(content=str(e), status_code=400)
+
+    
 @router.get("/wecom/callback")
 async def verify(request: Request):
-    msg_signature = request.query_params.get("msg_signature")
-    timestamp = request.query_params.get("timestamp")
-    nonce = request.query_params.get("nonce")
     echostr = request.query_params.get("echostr")
-
-    crypto = WeChatCrypto(TOKEN, AES_KEY, CORP_ID)
-
-    try:
-        echo_str = crypto.check_signature(
-            msg_signature,
-            timestamp,
-            nonce,
-            echostr
-        )
-        return PlainTextResponse(echo_str)  # ⚠️ 必须纯文本返回
-    except Exception as e:
-        return Response(content=str(e), status_code=400)
+    return PlainTextResponse(echostr)
