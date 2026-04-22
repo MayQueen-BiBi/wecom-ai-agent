@@ -47,5 +47,7 @@ async def verify(request: Request):
             echostr
         )
         return PlainTextResponse(echo_str)
+
     except Exception as e:
-        return PlainTextResponse(str(e), status_code=400)
+        print("VERIFY ERROR:", repr(e))
+        return PlainTextResponse("error")
