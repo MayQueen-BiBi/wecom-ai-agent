@@ -32,6 +32,7 @@ async def wecom_callback(request: Request):
 
 crypto = WeChatCrypto(TOKEN, AES_KEY, CORP_ID)
 
+
 @router.get("/wecom/callback")
 async def verify(request: Request):
     msg_signature = request.query_params.get("msg_signature")
@@ -39,12 +40,11 @@ async def verify(request: Request):
     nonce = request.query_params.get("nonce")
     echostr = request.query_params.get("echostr")
 
-    # 👉 关键：企业微信要求解密 echostr
-    echo = crypto.decrypt_message(
-        echostr,
+    echo = crypto.check_url(
         msg_signature,
         timestamp,
-        nonce
+        nonce,
+        echostr
     )
 
     return PlainTextResponse(echo)
