@@ -40,12 +40,12 @@ async def verify(request: Request):
     crypto = WeChatCrypto(TOKEN, AES_KEY, CORP_ID)
 
     try:
-        echo_str = crypto.check_signature(
+        echo_str = crypto.verify_url(
             msg_signature,
             timestamp,
             nonce,
             echostr
         )
-        return PlainTextResponse(echo_str)  # ⚠️ 必须纯文本返回
+        return PlainTextResponse(echo_str)
     except Exception as e:
-        return Response(content=str(e), status_code=400)
+        return PlainTextResponse(str(e), status_code=400)
