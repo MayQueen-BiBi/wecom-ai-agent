@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Request
+from fastapi.responses import PlainTextResponse
 from app.wecom.crypto import decrypt_msg, encrypt_msg
 from app.agent.core import run_agent
 import logging
@@ -26,6 +27,8 @@ async def wecom_callback(request: Request):
     # 4. 加密返回
     return encrypt_msg(reply, xml, nonce, timestamp)
 
+
 @router.get("/wecom/callback")
 async def verify(request: Request):
-    return request.query_params.get("echostr", "")
+    echostr = request.query_params.get("echostr", "")
+    return PlainTextResponse(echostr)
