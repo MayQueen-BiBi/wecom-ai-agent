@@ -40,7 +40,7 @@ async def verify(request: Request):
     nonce = request.query_params.get("nonce")
     echostr = request.query_params.get("echostr")
 
-    echo = crypto.check_url(
+    echo = crypto.verify_url(
         msg_signature,
         timestamp,
         nonce,
