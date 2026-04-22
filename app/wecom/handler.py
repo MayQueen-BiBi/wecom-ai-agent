@@ -33,6 +33,8 @@ async def wecom_callback(request: Request):
 crypto = WeChatCrypto(TOKEN, AES_KEY, CORP_ID)
 
 
+from fastapi.responses import PlainTextResponse
+
 @router.get("/wecom/callback")
 async def verify(request: Request):
     msg_signature = request.query_params.get("msg_signature")
@@ -40,11 +42,11 @@ async def verify(request: Request):
     nonce = request.query_params.get("nonce")
     echostr = request.query_params.get("echostr")
 
-    echo = crypto.verify_url(
+    echo = crypto.decrypt_message(
+        echostr,
         msg_signature,
         timestamp,
-        nonce,
-        echostr
+        nonce
     )
 
     return PlainTextResponse(echo)
