@@ -40,7 +40,7 @@ async def verify(request: Request):
     crypto = WeChatCrypto(TOKEN, AES_KEY, CORP_ID)
 
     try:
-        echo_str = crypto.verify_url(
+        echo_str = crypto.check_url(
             msg_signature,
             timestamp,
             nonce,
