@@ -5,29 +5,62 @@ from app.config.settings import TOKEN, AES_KEY, CORP_ID
 from app.wecom.crypto import decrypt_msg, encrypt_msg
 from app.agent.core import run_agent
 import logging
+import xmltodict
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+
 @router.post("/wecom/callback")
-async def wecom_callback(request: Request):
-    body = (await request.body()).decode("utf-8")
+async def callback(request: Request):
+
+    raw_body = (await request.body()).decode()
 
     msg_signature = request.query_params.get("msg_signature")
     timestamp = request.query_params.get("timestamp")
     nonce = request.query_params.get("nonce")
+    echostr = request.query_params.get("echostr")
 
-    # 1. 解密消息（返回已解析的字典）
-    xml = decrypt_msg(body, msg_signature, timestamp, nonce)
-    user_msg = xml.get("Content", "") if xml else ""
-    user_id = xml.get("FromUserName", "anonymous") if xml else "anonymous"
+    # 1.URL验证优先级最高
+    if echostr:
+        return Response(content=echostr)
 
-    # 3. 调用 Agent
-    reply = run_agent(user_id, user_msg)
-    logger.info("run_agent called for user=%s", user_id)
+    # 2.只有XML才进入解密
+    if "<xml>" not in raw_body:
+        print("Not xml request, ignore")
+        return Response(content="success")
 
-    # 4. 加密返回
-    return encrypt_msg(reply, xml, nonce, timestamp)
+    # 3.解密消息
+    msg = decrypt_msg(raw_body, msg_signature, timestamp, nonce)
+
+    if not msg:
+        return Response(content="success")
+
+    print("USER MSG:", msg)
+
+    user_id = msg["from"]
+    user_text = msg["content"]
+
+    print("USER:", user_id, user_text)
+
+    # =========================
+    # 3️⃣ 调用你的 run_agent
+    # =========================
+    reply_text = run_agent(user_id, user_text)
+
+    print("REPLY:", reply_text)
+
+    # =========================
+    # 3️⃣ 回复
+    # =========================
+    reply = encrypt_msg(
+        reply_text,
+        msg,
+        nonce,
+        timestamp
+    )
+
+    return Response(content=reply, media_type="application/xml")
 
 
 @router.get("/wecom/callback")
@@ -37,6 +70,9 @@ async def verify(request: Request):
     nonce = request.query_params.get("nonce")
     echostr = request.query_params.get("echostr")
 
+    print(
+        TOKEN, AES_KEY, CORP_ID, msg_signature, timestamp, nonce, echostr
+    )
     crypto = WeChatCrypto(TOKEN, AES_KEY, CORP_ID)
 
     try:
@@ -51,3 +87,4 @@ async def verify(request: Request):
     except Exception as e:
         print("VERIFY ERROR:", repr(e))
         return PlainTextResponse("error")
+
