@@ -2,6 +2,7 @@ import json
 import requests
 import logging
 import hashlib
+import time
 from typing import Optional, Dict, Tuple, Any
 
 # 配置日志系统
@@ -15,11 +16,74 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+class FlowTracker:
+    """
+    流程追踪器：记录每个请求的完整处理流程
+    """
+    
+    def __init__(self, user_id: str, user_msg: str):
+        self.user_id = user_id
+        self.user_msg = user_msg
+        self.start_time = time.time()
+        self.flow_steps = []
+        self.final_answer = None
+        self.error = None
+        
+    def add_step(self, step_name: str, details: Dict = None, duration_ms: float = None):
+        """添加处理步骤记录"""
+        step = {
+            "step_name": step_name,
+            "timestamp": time.time(),
+            "details": details or {}
+        }
+        if duration_ms is not None:
+            step["duration_ms"] = duration_ms
+        self.flow_steps.append(step)
+        
+    def set_final_answer(self, answer: str):
+        """设置最终回答"""
+        self.final_answer = answer
+        
+    def set_error(self, error: str):
+        """设置错误信息"""
+        self.error = error
+        
+    def log_summary(self):
+        """输出完整的流程日志"""
+        total_duration = (time.time() - self.start_time) * 1000
+        
+        logger.info("=" * 80)
+        logger.info(f"📋 请求追踪开始 | 用户ID: {self.user_id}")
+        logger.info(f"🔍 原始查询: {self.user_msg}")
+        logger.info("-" * 80)
+        
+        for i, step in enumerate(self.flow_steps, 1):
+            duration = step.get("duration_ms", "N/A")
+            logger.info(f"\n[{i:2d}] {step['step_name']}")
+            if isinstance(duration, float):
+                logger.info(f"   ⏱️ 耗时: {duration:.2f}ms")
+            
+            if step["details"]:
+                for key, value in step["details"].items():
+                    if isinstance(value, str) and len(value) > 100:
+                        value = value[:100] + "..."
+                    logger.info(f"   {key}: {value}")
+        
+        logger.info("\n" + "-" * 80)
+        if self.error:
+            logger.error(f"❌ 错误: {self.error}")
+        else:
+            answer_preview = self.final_answer[:100] + "..." if self.final_answer and len(self.final_answer) > 100 else self.final_answer
+            logger.info(f"✅ 最终回答: {answer_preview}")
+        logger.info(f"⏱️ 总耗时: {total_duration:.2f}ms")
+        logger.info("=" * 80)
+
 # 新架构导入
 from app.agent.intent_classifier import intent_classifier
 from app.agent.state_machine import StateMachine, AgentState
 from app.agent.prompt_templates import prompt_manager
-from app.agent.faq import base_hybrid_retriever
+from app.agent.rag_enhanced import enhanced_retriever  # 使用增强版检索器（含Query Rewrite）
 from app.agent.semantic_cache import semantic_cache
 from app.agent.risk_guard import needs_handoff, risk_block_reply
 from app.agent.tools import call_tool
@@ -213,78 +277,181 @@ def run_agent(user_id: str, user_msg: str):
     重构后的主入口：中控调度架构
     流程：拦截 -> 意图与状态 -> 槽位同步 -> 检索策略 -> 响应生成
     """
-    logger.info(f"--- Processing: {user_msg[:30]} ---")
+    # 初始化流程追踪器
+    tracker = FlowTracker(user_id, user_msg)
     
-    # 获取用户状态机
-    sm = _get_user_state_machine(user_id)
+    try:
+        step_start = time.time()
+        
+        # 1. 获取用户状态机
+        sm = _get_user_state_machine(user_id)
+        tracker.add_step("获取用户状态机", {
+            "用户ID": user_id,
+            "状态机已存在": user_id in user_state_machines
+        }, (time.time() - step_start) * 1000)
+
+        # 2. 静态拦截（风险控制、人工转接、退出意图）
+        step_start = time.time()
+        if (resp := _handle_static_intercepts(user_id, user_msg, sm)):
+            tracker.add_step("静态拦截命中", {"拦截类型": "风险/转人工/退出", "响应": resp}, (time.time() - step_start) * 1000)
+            tracker.set_final_answer(resp)
+            tracker.log_summary()
+            return resp
+        tracker.add_step("静态拦截检查", {"结果": "通过，无拦截"}, (time.time() - step_start) * 1000)
+
+        # 3. 意图识别
+        step_start = time.time()
+        intent, confidence = intent_classifier.classify(user_msg)
+        tracker.add_step("意图识别", {
+            "意图": intent,
+            "置信度": f"{confidence:.4f}"
+        }, (time.time() - step_start) * 1000)
+
+        # 4. 状态演进
+        step_start = time.time()
+        prev_state = sm.get_current_state()
+        current_state = sm.process_intent(intent, confidence)
+        tracker.add_step("状态演进", {
+            "前一状态": prev_state.value,
+            "当前状态": current_state.value,
+            "状态栈深度": len(sm.get_context().state_stack)
+        }, (time.time() - step_start) * 1000)
+
+        # 5. 语义缓存检查
+        step_start = time.time()
+        cache_query = f"[{intent}] {user_msg}"
+        cached = semantic_cache.get(cache_query)
+        if cached:
+            tracker.add_step("语义缓存命中", {"缓存键": cache_query[:50]}, (time.time() - step_start) * 1000)
+            _update_metrics(intent, prev_state, current_state, cache_hit=True)
+            tracker.set_final_answer(cached[0])
+            tracker.log_summary()
+            return cached[0]
+        tracker.add_step("语义缓存检查", {"结果": "未命中", "缓存键": cache_query[:50]}, (time.time() - step_start) * 1000)
+
+        # 6. 槽位提取与同步
+        step_start = time.time()
+        extracted_slots = _extract_slots(user_msg)
+        sm.sync_slots(extracted_slots)
+        tracker.add_step("槽位提取", {"提取的槽位": extracted_slots}, (time.time() - step_start) * 1000)
+
+        # 7. 获取检索策略与引导信息
+        step_start = time.time()
+        retrieval_strategy = sm.get_retrieval_strategy()
+        action_guidance = sm.get_action_guidance()
+        tracker.add_step("检索策略生成", {
+            "过滤条件": retrieval_strategy.get("filter"),
+            "Top-K": retrieval_strategy.get("top_k"),
+            "搜索类型": retrieval_strategy.get("search_type"),
+            "人物角色": action_guidance.get("persona_focus")
+        }, (time.time() - step_start) * 1000)
+
+        # 8. 获取对话历史
+        step_start = time.time()
+        conversation_history = sm.get_context().get_conversation_history()
+        history_len = len(sm.get_context().conversation_history)
+        tracker.add_step("对话历史获取", {"历史轮数": history_len}, (time.time() - step_start) * 1000)
+
+        # 9. 上下文感知查询增强
+        step_start = time.time()
+        enhanced_query = user_msg
+        last_user_msg = sm.get_context().get_last_user_message()
+        if last_user_msg:
+            service_keywords = ["种植牙", "正畸", "洗牙", "补牙", "拔牙", "根管治疗"]
+            has_service_context = any(keyword in last_user_msg for keyword in service_keywords)
+            if has_service_context and len(user_msg) <= 5:
+                enhanced_query = f"{last_user_msg} {user_msg}"
+                tracker.add_step("上下文感知增强", {
+                    "原始查询": user_msg,
+                    "增强后查询": enhanced_query,
+                    "触发原因": "检测到简短问句+服务上下文"
+                }, (time.time() - step_start) * 1000)
+            else:
+                tracker.add_step("上下文感知增强", {"结果": "无需增强"}, (time.time() - step_start) * 1000)
+        else:
+            tracker.add_step("上下文感知增强", {"结果": "无历史对话"}, (time.time() - step_start) * 1000)
+
+        # 10. 知识检索（Query Rewrite + Hybrid + Rerank）
+        step_start = time.time()
+        contexts = enhanced_retriever.search(
+            enhanced_query, 
+            top_k=retrieval_strategy["top_k"]
+        )
+        context_text = "\n".join([f"[{i+1}] {doc}" for i, doc in enumerate(contexts)])
+        tracker.add_step("知识检索", {
+            "检索查询": enhanced_query,
+            "召回文档数": len(contexts),
+            "上下文摘要": context_text[:150] + "..." if len(context_text) > 150 else context_text
+        }, (time.time() - step_start) * 1000)
+
+        # 11. Prompt生成
+        step_start = time.time()
+        prompt = prompt_manager.format_prompt(
+            state=current_state,
+            query=user_msg,
+            context=context_text,
+            history=conversation_history,
+            **sm.get_context().slots
+        )
+        tracker.add_step("Prompt生成", {
+            "模板名称": prompt["name"],
+            "System Prompt长度": len(prompt["system"]),
+            "User Prompt长度": len(prompt["user"])
+        }, (time.time() - step_start) * 1000)
+
+        # 12. LLM响应生成
+        step_start = time.time()
+        answer = _call_llm(prompt["system"], prompt["user"])
+        tracker.add_step("LLM响应生成", {
+            "回答长度": len(answer),
+            "API Key配置": "已配置" if QWEN_API_KEY else "未配置"
+        }, (time.time() - step_start) * 1000)
+
+        # 13. 业务转化层特殊处理
+        step_start = time.time()
+        if current_state == AgentState.BUSINESS_CONVERSION:
+            slots = sm.get_context().slots
+            if slots["name"] and slots["phone"] and slots["service_type"] and slots["time_slot"]:
+                result = call_tool(
+                    "create_appointment",
+                    {
+                        "name": slots["name"],
+                        "phone": slots["phone"],
+                        "time": slots["time_slot"],
+                        "service": slots["service_type"],
+                    },
+                )
+                sm.get_context().add_conversation_turn(user_msg, result)
+                sm.reset()
+                tracker.add_step("预约执行", {"状态": "成功", "服务类型": slots["service_type"]}, (time.time() - step_start) * 1000)
+                tracker.set_final_answer(result)
+                tracker.log_summary()
+                return result
+            else:
+                tracker.add_step("预约处理", {"状态": "收集信息中", "缺失槽位": [k for k, v in slots.items() if v is None]}, (time.time() - step_start) * 1000)
+        else:
+            tracker.add_step("业务转化检查", {"结果": "非转化状态，跳过"}, (time.time() - step_start) * 1000)
+
+        # 14. 后处理与缓存
+        step_start = time.time()
+        final_answer = _post_process_answer(answer, contexts)
+        sm.get_context().add_conversation_turn(user_msg, final_answer)
+        semantic_cache.set(cache_query, final_answer, {"intent": intent, "state": current_state.value})
+        _update_metrics(intent, prev_state, current_state, cache_hit=False)
+        tracker.add_step("后处理与缓存", {
+            "回答长度": len(final_answer),
+            "是否存入缓存": True
+        }, (time.time() - step_start) * 1000)
+
+        tracker.set_final_answer(final_answer)
+        
+    except Exception as e:
+        logger.error(f"Agent execution error: {e}", exc_info=True)
+        tracker.set_error(str(e))
+        tracker.log_summary()
+        return "抱歉，处理您的请求时出现错误，请稍后重试。"
     
-    # 1. 静态拦截（风险控制、人工转接、退出意图）
-    if (resp := _handle_static_intercepts(user_id, user_msg, sm)):
-        return resp
-
-    # 2. 意图识别
-    intent, confidence = intent_classifier.classify(user_msg)
-    
-    # 3. 状态演进
-    prev_state = sm.get_current_state()
-    current_state = sm.process_intent(intent, confidence)
-    
-    # 4. 语义缓存检查（考虑意图，避免不同意图的查询互相命中）
-    cache_query = f"[{intent}] {user_msg}"
-    if (cached := semantic_cache.get(cache_query)):
-        _update_metrics(intent, prev_state, current_state, cache_hit=True)
-        return cached[0]
-
-    # 5. 槽位提取与同步
-    extracted_slots = _extract_slots(user_msg)
-    sm.sync_slots(extracted_slots)
-
-    # 6. 获取检索策略与引导信息
-    retrieval_strategy = sm.get_retrieval_strategy()
-    action_guidance = sm.get_action_guidance()
-
-    # 7. 知识检索
-    contexts = base_hybrid_retriever.search(
-        user_msg, 
-        top_k=retrieval_strategy["top_k"], 
-        filter_dict=retrieval_strategy["filter"]
-    )
-    context_text = "\n".join([f"[{i+1}] {doc}" for i, doc in enumerate(contexts)])
-
-    # 8. 响应生成（分层 Prompt）
-    prompt = prompt_manager.format_prompt(
-        state=current_state,
-        query=user_msg,
-        context=context_text,
-        **sm.get_context().slots
-    )
-    
-    answer = _call_llm(prompt["system"], prompt["user"])
-
-    # 9. 业务转化层特殊处理
-    if current_state == AgentState.BUSINESS_CONVERSION:
-        slots = sm.get_context().slots
-        # 检查是否所有必要槽位已填充
-        if slots["name"] and slots["phone"] and slots["service_type"] and slots["time_slot"]:
-            # 执行预约
-            logger.info(f"Creating appointment: {slots['name']}, {slots['service_type']}, {slots['time_slot']}")
-            result = call_tool(
-                "create_appointment",
-                {
-                    "name": slots["name"],
-                    "phone": slots["phone"],
-                    "time": slots["time_slot"],
-                    "service": slots["service_type"],
-                },
-            )
-            sm.reset()
-            return result
-
-    # 10. 后处理与缓存
-    final_answer = _post_process_answer(answer, contexts)
-    semantic_cache.set(cache_query, final_answer, {"intent": intent, "state": current_state.value})
-    _update_metrics(intent, prev_state, current_state, cache_hit=False)
-
+    tracker.log_summary()
     return final_answer
 
 

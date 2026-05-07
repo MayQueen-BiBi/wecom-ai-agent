@@ -58,6 +58,10 @@ class ConversationContext:
         # 3. 任务恢复区：存储挂起时的槽位快照
         self.suspended_slots: Optional[Dict] = None
         self.CONFIDENCE_THRESHOLD = 0.6 # 算法门控
+        
+        # 4. 对话历史（用于上下文理解）
+        self.conversation_history: List[Dict[str, str]] = []
+        self.MAX_HISTORY_LENGTH = 5  # 最多保留5轮对话
 
     @property
     def current_state(self) -> AgentState:
@@ -123,8 +127,39 @@ class ConversationContext:
             "stack_depth": len(self.state_stack),
             "stack_trace": [s.value for s in self.state_stack],
             "slots": self.slots,
-            "is_suspended": self.suspended_slots is not None
+            "is_suspended": self.suspended_slots is not None,
+            "history_length": len(self.conversation_history)
         }
+
+    def add_conversation_turn(self, user_msg: str, agent_reply: str):
+        """添加对话轮次到历史"""
+        self.conversation_history.append({
+            "user": user_msg,
+            "agent": agent_reply
+        })
+        # 保持历史长度限制
+        if len(self.conversation_history) > self.MAX_HISTORY_LENGTH:
+            self.conversation_history.pop(0)
+
+    def get_conversation_history(self) -> str:
+        """获取格式化的对话历史字符串"""
+        history_lines = []
+        for i, turn in enumerate(self.conversation_history):
+            history_lines.append(f"用户{i+1}: {turn['user']}")
+            history_lines.append(f"助手{i+1}: {turn['agent']}")
+        return "\n".join(history_lines)
+
+    def get_last_user_message(self) -> Optional[str]:
+        """获取上一轮用户消息"""
+        if self.conversation_history:
+            return self.conversation_history[-1]["user"]
+        return None
+
+    def get_last_agent_reply(self) -> Optional[str]:
+        """获取上一轮助手回复"""
+        if self.conversation_history:
+            return self.conversation_history[-1]["agent"]
+        return None
 
     def set_slot(self, key: str, value: Any):
         """设置槽位"""
