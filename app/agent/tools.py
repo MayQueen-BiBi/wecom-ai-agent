@@ -1,6 +1,11 @@
 from app.services.appointment import (
     get_slots,
-    create_appointment
+    create_appointment,
+    get_doctors,
+    get_doctor_by_id,
+    get_appointments,
+    update_appointment_status,
+    recommend_doctors
 )
 
 class ToolRegistry:
@@ -12,6 +17,7 @@ class ToolRegistry:
     
     def _register_default_tools(self):
         """注册默认工具"""
+        # 获取可预约时段
         self.register_tool(
             name="get_slots",
             description="获取可预约时间",
@@ -19,6 +25,7 @@ class ToolRegistry:
             parameters={}
         )
         
+        # 创建预约
         self.register_tool(
             name="create_appointment",
             description="创建预约",
@@ -27,9 +34,65 @@ class ToolRegistry:
                 "name": {"type": "string", "description": "用户姓名"},
                 "phone": {"type": "string", "description": "手机号码"},
                 "time": {"type": "string", "description": "预约时间"},
-                "service": {"type": "string", "description": "服务类型"}
+                "service": {"type": "string", "description": "服务类型"},
+                "doctor_id": {"type": "string", "description": "医生ID（可选）"}
             },
             required=["name", "phone", "time", "service"]
+        )
+        
+        # 获取医生列表
+        self.register_tool(
+            name="get_doctors",
+            description="获取医生列表",
+            function=get_doctors,
+            parameters={
+                "department": {"type": "string", "description": "科室名称（可选）"}
+            }
+        )
+        
+        # 获取医生详情
+        self.register_tool(
+            name="get_doctor_by_id",
+            description="根据ID获取医生信息",
+            function=get_doctor_by_id,
+            parameters={
+                "doctor_id": {"type": "string", "description": "医生ID"}
+            },
+            required=["doctor_id"]
+        )
+        
+        # 获取预约列表
+        self.register_tool(
+            name="get_appointments",
+            description="获取所有预约",
+            function=get_appointments,
+            parameters={
+                "status": {"type": "string", "description": "预约状态过滤（可选）"}
+            }
+        )
+        
+        # 更新预约状态
+        self.register_tool(
+            name="update_appointment_status",
+            description="更新预约状态",
+            function=update_appointment_status,
+            parameters={
+                "appointment_id": {"type": "string", "description": "预约ID"},
+                "status": {"type": "string", "description": "新状态（pending/confirmed/visited/canceled）"},
+                "visit_notes": {"type": "string", "description": "就诊记录（可选）"}
+            },
+            required=["appointment_id", "status"]
+        )
+        
+        # 推荐医生
+        self.register_tool(
+            name="recommend_doctors",
+            description="根据服务类型推荐医生",
+            function=recommend_doctors,
+            parameters={
+                "service_type": {"type": "string", "description": "服务类型（如种植牙、正畸、洗牙等）"}
+            },
+            required=["service_type"]
         )
     
     def register_tool(self, name: str, description: str, function, parameters: dict, required: list = None):

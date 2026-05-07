@@ -1,9 +1,27 @@
 import json
 import requests
-from typing import Optional, Dict
-from app.agent.rag_enhanced import rag_search
+import logging
+import hashlib
+from typing import Optional, Dict, Tuple, Any
+
+# 配置日志系统
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('agent.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# 新架构导入
+from app.agent.intent_classifier import intent_classifier
+from app.agent.state_machine import StateMachine, AgentState
+from app.agent.prompt_templates import prompt_manager
+from app.agent.faq import base_hybrid_retriever
+from app.agent.semantic_cache import semantic_cache
 from app.agent.risk_guard import needs_handoff, risk_block_reply
-from app.agent.session import get_session, reset_appointment
 from app.agent.tools import call_tool
 from app.config.settings import QWEN_API_KEY
 
@@ -18,40 +36,31 @@ SERVICE_TYPES = ["种植牙", "正畸", "洗牙", "补牙", "拔牙", "牙痛检
 # LLM 越权检测关键词
 FORBIDDEN_PHRASES = ["预约成功", "已为您预约", "挂号成功", "预约已完成"]
 
-
-def _is_appointment_intent(user_msg: str) -> bool:
-    """检测预约意图（FSM决策）"""
-    keywords = ["预约", "挂号", "到院", "面诊", "看牙", "安排时间"]
-    return any(k in user_msg for k in keywords)
+# 监控统计
+metrics = {
+    "intent_distribution": {},
+    "state_transitions": {},
+    "cache_hits": 0,
+    "cache_misses": 0,
+    "total_queries": 0
+}
 
 
 def _is_exit_intent(user_msg: str) -> bool:
-    """检测退出意图（FSM决策）"""
+    """检测退出意图"""
     return any(k in user_msg for k in EXIT_KEYWORDS)
 
 
 def _extract_phone(user_msg: str) -> Optional[str]:
-    """提取手机号（工具函数）"""
+    """提取手机号"""
     digits = "".join(ch for ch in user_msg if ch.isdigit())
     if len(digits) == 11 and digits.startswith("1"):
         return digits
     return None
 
 
-def _extract_time(user_msg: str) -> Optional[str]:
-    """提取时间（工具函数）"""
-    if ":" in user_msg:
-        for token in user_msg.split():
-            if ":" in token:
-                return token.strip("，。,.")
-    for token in ["今天", "明天", "后天", "上午", "下午", "晚上"]:
-        if token in user_msg:
-            return token
-    return None
-
-
 def _extract_service(user_msg: str) -> Optional[str]:
-    """提取服务类型（工具函数）"""
+    """提取服务类型"""
     for service in SERVICE_TYPES:
         if service in user_msg:
             return service
@@ -59,20 +68,19 @@ def _extract_service(user_msg: str) -> Optional[str]:
 
 
 def _validate_llm_response(response: str, session_state: str) -> str:
-    """验证LLM输出，防止越权（输出验证层）"""
+    """验证LLM输出，防止越权"""
     if session_state != "appointment_completed":
         for phrase in FORBIDDEN_PHRASES:
             if phrase in response:
-                # LLM越权，返回安全提示
                 return "我已记录您的需求，正在为您处理..."
-    
     return response
 
 
-def _llm_fallback(user_msg: str) -> str:
-    """LLM兜底：仅用于自然语言生成（最小权限原则）"""
+def _call_llm(system_prompt: str, user_prompt: str) -> str:
+    """调用LLM生成响应"""
     if not QWEN_API_KEY:
-        return "我可以先回答基础问题，并协助您预约。请问需要预约还是咨询？"
+        logger.warning("QWEN_API_KEY not configured, returning fallback response")
+        return "暂时无法生成智能回复，请直接预约或咨询。"
 
     headers = {
         "Content-Type": "application/json",
@@ -83,22 +91,8 @@ def _llm_fallback(user_msg: str) -> str:
         "model": "qwen-flash",
         "input": {
             "messages": [
-                {
-                    "role": "system",
-                    "content": """
-                    你是牙科医院客服助理。
-                    ⚠️ 严格规则：
-                    1. 你只能回答问题，**不能执行任何预约操作**
-                    2. 如果用户要求预约，请引导他们提供姓名和电话
-                    3. **绝对不要说"预约成功"或类似的话**
-                    4. 最终预约确认由系统完成，你无权确认
-                    5. 禁止诊断和疗效承诺
-                    """
-                },
-                {
-                    "role": "user",
-                    "content": user_msg
-                }
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
             ]
         },
         "parameters": {
@@ -108,108 +102,220 @@ def _llm_fallback(user_msg: str) -> str:
 
     try:
         resp = requests.post(QWEN_URL, headers=headers, json=payload, timeout=5)
-
-        if resp.status_code != 200:
-            print("LLM HTTP ERROR:", resp.status_code, resp.text)
-            return "暂时无法智能回复，请问您是想预约还是咨询？"
-
-        result = resp.json()
-        print("LLM RAW RESULT:", result)
-
-        if "code" in result:
-            print("LLM API ERROR:", result)
-            return "我可以帮您预约洗牙、补牙或解答常见问题，请问需要什么服务？"
-
-        return result["output"]["choices"][0]["message"]["content"]
-
+        if resp.status_code == 200:
+            result = resp.json()
+            if "output" in result:
+                return result["output"]["choices"][0]["message"]["content"].strip()
+        logger.error(f"LLM API returned non-200 status: {resp.status_code}")
     except Exception as e:
-        print("LLM EXCEPTION:", e)
-        return "网络有点忙，我可以先帮您预约或解答基础问题。"
+        logger.error(f"LLM call error: {e}")
+
+    return "暂时无法生成回复，请稍后重试。"
 
 
-def _handle_appointment_flow(session, user_msg: str) -> str:
-    """处理预约流程（FSM决策核心）"""
-    appointment = session.appointment
+def _generate_cache_key(intent: str, query: str) -> str:
+    """生成语义缓存键（基于意图和查询的hash）"""
+    content = f"{intent}:{query[:100]}"
+    return hashlib.md5(content.encode('utf-8')).hexdigest()
 
-    # 增量提取信息（职责分离：信息提取）
-    if not appointment["name"]:
-        name_candidate = user_msg.strip()
-        if len(name_candidate) <= 8 and "@" not in name_candidate and _extract_phone(name_candidate) is None:
-            appointment["name"] = name_candidate
 
+def _extract_slots(user_msg: str) -> Dict[str, Any]:
+    """从用户消息中提取槽位信息"""
+    slots = {}
+    
     phone = _extract_phone(user_msg)
     if phone:
-        appointment["phone"] = phone
-
+        slots["phone"] = phone
+    
     service = _extract_service(user_msg)
-    if service and not appointment["service"]:
-        appointment["service"] = service
-        if service not in session.tags:
-            session.tags.append(service)
+    if service:
+        slots["service_type"] = service
+    
+    # 尝试提取姓名（简短文本，不含特殊字符，排除常见前缀）
+    reserved_phrases = ["帮我预约", "预约", "挂号", "我想预约", "安排时间", "我叫", "我是", "我的名字是"]
+    is_reserved = any(phrase in user_msg for phrase in reserved_phrases)
+    if len(user_msg.strip()) <= 8 and "@" not in user_msg and not phone and not is_reserved:
+        slots["name"] = user_msg.strip()
+    
+    return slots
 
-    time_val = _extract_time(user_msg)
-    if time_val:
-        appointment["time"] = time_val
 
-    # FSM决策：检查是否需要继续收集
-    if not appointment["name"]:
-        return "好的，我来帮您预约。请先告诉我您的称呼（姓名）。"
-    if not appointment["phone"]:
-        return "收到。请再提供您的11位手机号，方便确认预约信息。"
-    if not appointment["service"]:
-        return "请问您想预约哪项服务？例如：种植牙、正畸、洗牙。"
-    if not appointment["time"]:
-        slots = call_tool("get_slots", {})
-        return f"可预约时段有：{', '.join(slots)}。请回复您方便的时间。"
+def _post_process_answer(answer: str, contexts: list) -> str:
+    """后处理回答：去除多余空格，确保格式正确"""
+    if not answer:
+        return "暂时无法回答您的问题。"
+    
+    answer = answer.strip()
+    
+    # 如果没有找到相关上下文，添加提示
+    if not contexts:
+        answer += "\n\n建议您到院咨询专业医生获取更详细的信息。"
+    
+    return answer
 
-    # FSM决策：所有信息完整，执行预约
-    call_tool(
-        "create_appointment",
-        {
-            "name": appointment["name"],
-            "phone": appointment["phone"],
-            "time": appointment["time"],
-            "service": appointment["service"],
-        },
-    )
-    session.transition_to("appointment_completed")
-    reset_appointment(session)
-    return "已为您登记预约，我们会尽快与您确认到院安排。若您需要，我也可以继续解答项目相关问题。"
+
+def _handle_static_intercepts(user_id: str, user_msg: str, sm: StateMachine) -> Optional[str]:
+    """逻辑封装：处理无需经过 LLM 的静态链路"""
+    # 风险拦截
+    if risk_block_reply(user_msg):
+        return "对话涉及敏感信息，请咨询线下门诊。"
+    
+    # 转人工
+    if needs_handoff(user_msg):
+        return "正在为您转接专业医护人员..."
+        
+    # 退出重置
+    if _is_exit_intent(user_msg):
+        sm.reset()
+        return "好的，期待下次为您服务。"
+    
+    return None
+
+
+def _update_metrics(intent: str, prev_state: AgentState, new_state: AgentState, cache_hit: bool):
+    """更新监控指标"""
+    metrics["intent_distribution"][intent] = metrics["intent_distribution"].get(intent, 0) + 1
+    
+    transition_key = f"{prev_state.value}->{new_state.value}"
+    metrics["state_transitions"][transition_key] = metrics["state_transitions"].get(transition_key, 0) + 1
+    
+    metrics["total_queries"] += 1
+    if cache_hit:
+        metrics["cache_hits"] += 1
+    else:
+        metrics["cache_misses"] += 1
+
+
+def get_metrics() -> Dict:
+    """获取监控指标"""
+    hit_rate = metrics["cache_hits"] / max(metrics["total_queries"], 1) * 100
+    return {
+        **metrics,
+        "cache_hit_rate": f"{hit_rate:.2f}%"
+    }
+
+
+# 多用户状态机存储
+user_state_machines: Dict[str, StateMachine] = {}
+
+
+def _get_user_state_machine(user_id: str) -> StateMachine:
+    """获取用户专属状态机（多用户支持）"""
+    if user_id not in user_state_machines:
+        user_state_machines[user_id] = StateMachine()
+        logger.info(f"Created new state machine for user: {user_id}")
+    
+    return user_state_machines[user_id]
 
 
 def run_agent(user_id: str, user_msg: str):
-    """主入口：严格遵循 FSM优先 + LLM兜底 原则"""
-    session = get_session(user_id)
+    """
+    重构后的主入口：中控调度架构
+    流程：拦截 -> 意图与状态 -> 槽位同步 -> 检索策略 -> 响应生成
+    """
+    logger.info(f"--- Processing: {user_msg[:30]} ---")
+    
+    # 获取用户状态机
+    sm = _get_user_state_machine(user_id)
+    
+    # 1. 静态拦截（风险控制、人工转接、退出意图）
+    if (resp := _handle_static_intercepts(user_id, user_msg, sm)):
+        return resp
 
-    # 优先级1：风险拦截（职责分离）
-    blocked = risk_block_reply(user_msg)
-    if blocked:
-        return blocked
+    # 2. 意图识别
+    intent, confidence = intent_classifier.classify(user_msg)
+    
+    # 3. 状态演进
+    prev_state = sm.get_current_state()
+    current_state = sm.process_intent(intent, confidence)
+    
+    # 4. 语义缓存检查（考虑意图，避免不同意图的查询互相命中）
+    cache_query = f"[{intent}] {user_msg}"
+    if (cached := semantic_cache.get(cache_query)):
+        _update_metrics(intent, prev_state, current_state, cache_hit=True)
+        return cached[0]
 
-    # 优先级2：人工转接（FSM决策）
-    if needs_handoff(user_msg):
-        session.handoff = True
-        session.transition_to("handoff_pending")
-        return "已为您转接人工客服，请稍候。为便于快速处理，您也可以补充您的姓名和联系电话。"
+    # 5. 槽位提取与同步
+    extracted_slots = _extract_slots(user_msg)
+    sm.sync_slots(extracted_slots)
 
-    # 优先级3：退出意图（FSM决策）
-    if _is_exit_intent(user_msg):
-        reset_appointment(session)
-        return "好的，如有需要随时找我预约。"
+    # 6. 获取检索策略与引导信息
+    retrieval_strategy = sm.get_retrieval_strategy()
+    action_guidance = sm.get_action_guidance()
 
-    # 优先级4：预约流程（FSM决策核心）
-    if _is_appointment_intent(user_msg) or session.state == "appointment_collecting":
-        session.transition_to("appointment_collecting")
-        return _handle_appointment_flow(session, user_msg)
+    # 7. 知识检索
+    contexts = base_hybrid_retriever.search(
+        user_msg, 
+        top_k=retrieval_strategy["top_k"], 
+        filter_dict=retrieval_strategy["filter"]
+    )
+    context_text = "\n".join([f"[{i+1}] {doc}" for i, doc in enumerate(contexts)])
 
-    # 优先级5：RAG检索（增强版）
-    rag_answer, evaluation = rag_search(user_msg)
-    if rag_answer:
-        # 记录评估结果（用于监控和优化）
-        print(f"RAG评估结果 - 相关性: {evaluation['relevance']:.2f}, 准确性: {evaluation['accuracy']:.2f}, 有用性: {evaluation['usefulness']:.2f}")
-        return rag_answer + " 如需我帮您直接安排面诊预约，也可以告诉我。"
+    # 8. 响应生成（分层 Prompt）
+    prompt = prompt_manager.format_prompt(
+        state=current_state,
+        query=user_msg,
+        context=context_text,
+        **sm.get_context().slots
+    )
+    
+    answer = _call_llm(prompt["system"], prompt["user"])
 
-    # 优先级6：LLM兜底（最小权限原则）
-    llm_response = _llm_fallback(user_msg)
-    validated_response = _validate_llm_response(llm_response, session.state)
-    return validated_response
+    # 9. 业务转化层特殊处理
+    if current_state == AgentState.BUSINESS_CONVERSION:
+        slots = sm.get_context().slots
+        # 检查是否所有必要槽位已填充
+        if slots["name"] and slots["phone"] and slots["service_type"] and slots["time_slot"]:
+            # 执行预约
+            logger.info(f"Creating appointment: {slots['name']}, {slots['service_type']}, {slots['time_slot']}")
+            result = call_tool(
+                "create_appointment",
+                {
+                    "name": slots["name"],
+                    "phone": slots["phone"],
+                    "time": slots["time_slot"],
+                    "service": slots["service_type"],
+                },
+            )
+            sm.reset()
+            return result
+
+    # 10. 后处理与缓存
+    final_answer = _post_process_answer(answer, contexts)
+    semantic_cache.set(cache_query, final_answer, {"intent": intent, "state": current_state.value})
+    _update_metrics(intent, prev_state, current_state, cache_hit=False)
+
+    return final_answer
+
+
+# 测试函数
+def test_intent_driven_agent():
+    """测试意图驱动架构"""
+    logger.info("=== Starting intent-driven agent test ===")
+    
+    test_cases = [
+        ("我牙疼", "症状诊断"),
+        ("什么是种植牙", "方案科普"),
+        ("种植牙多少钱", "价格询盘"),
+        ("帮我预约", "预约引导"),
+        ("医院在哪里", "就诊保障"),
+    ]
+    
+    test_user_id = "test_user_001"
+    
+    for query, expected in test_cases:
+        logger.info(f"\n=== Test case: {expected} ===")
+        logger.info(f"User query: {query}")
+        
+        answer = run_agent(test_user_id, query)
+        logger.info(f"Response: {answer}")
+    
+    metrics_result = get_metrics()
+    logger.info("\n=== Test metrics ===")
+    logger.info(f"Total queries: {metrics_result['total_queries']}")
+    logger.info(f"Cache hit rate: {metrics_result['cache_hit_rate']}")
+    logger.info(f"Intent distribution: {metrics_result['intent_distribution']}")
+
+
+if __name__ == "__main__":
+    test_intent_driven_agent()

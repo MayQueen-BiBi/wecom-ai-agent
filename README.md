@@ -1,15 +1,16 @@
 # wecom-ai-agent
 
-一个部署在企业微信的智能客服系统，基于 RAG（Retrieval-Augmented Generation）架构实现。
+一个部署在企业微信的智能客服系统，基于 RAG（Retrieval-Augmented Generation）架构实现，支持多用户会话管理和意图驱动的对话流程。
 
 ## 功能特性
 
 ### 🎯 核心功能
 - **FAQ智能检索**: 基于混合检索（BM25 + 向量检索）的知识库问答
-- **对话状态管理**: 有限状态机（FSM）控制对话流程
+- **对话状态管理**: 有限状态机（FSM）控制对话流程，支持栈式状态管理
 - **预约服务**: 支持种植牙、正畸、洗牙等服务的预约
 - **风险拦截**: 敏感词检测和人工转接机制
-- **数据库存储**: SQLite + SQLAlchemy 持久化预约数据
+- **数据库存储**: SQLite + SQLAlchemy 持久化预约、医生、排班数据
+- **员工/外部用户区分**: 支持企业微信内部员工和外部用户的权限区分
 
 ### ✨ 增强版RAG功能（V2.0）
 1. **Query Rewrite**: LLM参与理解用户问题，生成多版本改写查询
@@ -18,11 +19,38 @@
 4. **Prompt约束**: 严格的输出约束，减少幻觉
 5. **LLM-as-a-Judge**: 基于LLM的回答质量评估体系
 
+### 🧠 意图驱动架构（V3.0）
+- **4层架构设计**: MEDICAL_KNOWLEDGE → USER_DECISION → OBJECTION_HANDLING → BUSINESS_CONVERSION
+- **12个核心意图**:
+  - **Symptom_Check**: 症状咨询
+  - **Procedure_Explain**: 治疗流程解释
+  - **Process_Flow**: 就诊流程指引
+  - **Price_Inquiry**: 价格咨询
+  - **Comparative_Analysis**: 方案对比
+  - **Risk_Assessment**: 风险评估
+  - **Fear_Relief**: 恐惧缓解
+  - **Price_Objection**: 价格异议处理
+  - **Trust_Verification**: 信任验证
+  - **Lead_Generation**: 预约转化
+  - **Logistics_Support**: 后勤支持
+  - **Out_of_Scope**: 超出范围
+
+### 💾 语义缓存
+- 基于向量相似度的高频问题缓存
+- 支持缓存命中时直接返回，降低推理成本
+- 可配置缓存有效期和相似度阈值
+
+### 👨‍⚕️ 医生管理系统
+- 医生信息管理（姓名、职称、擅长领域）
+- 排班管理（可预约时间、已预约状态）
+- 智能医生推荐（基于症状和排班匹配）
+
 ## 技术架构
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     企业微信入口                                  │
+│              (区分内部员工/外部用户)                              │
 └───────────────────────────┬─────────────────────────────────────┘
                             │
                             ▼
@@ -37,23 +65,24 @@
 │  5. RAG检索 → 6. LLM兜底                                       │
 └───────────────────────────┬─────────────────────────────────────┘
                             │
-        ┌───────────────────┼───────────────────┐
-        ▼                   ▼                   ▼
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│  状态机     │    │   RAG模块   │    │   工具调用   │
-│ (FSM)       │    │ (增强版)    │    │ (ToolRegistry)│
-└─────────────┘    └─────────────┘    └─────────────┘
+        ┌───────────────────┼───────────────────┬───────────────┐
+        ▼                   ▼                   ▼               ▼
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐   ┌─────────────┐
+│  状态机     │    │   RAG模块   │    │ 意图分类器  │   │  语义缓存   │
+│ (FSM)       │    │ (增强版)    │    │(12意图)    │   │ (Semantic) │
+└─────────────┘    └─────────────┘    └─────────────┘   └─────────────┘
         │                   │                   │
         ▼                   ▼                   ▼
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│Session管理  │    │FAQ知识库    │    │  预约服务    │
-│             │    │BM25+向量    │    │  时间查询    │
+│Session管理  │    │FAQ知识库    │    │  工具调用    │
+│ (多用户)    │    │BM25+向量    │    │ (ToolRegistry)│
 └─────────────┘    └─────────────┘    └─────────────┘
-                            │
-                            ▼
-                   ┌─────────────┐
-                   │  SQLite DB  │
-                   └─────────────┘
+                            │                   │
+                            ▼                   ▼
+                   ┌─────────────────────────────────┐
+                   │          SQLite DB              │
+                   │  Doctor | Schedule | Appointment│
+                   └─────────────────────────────────┘
 ```
 
 ## 项目结构
@@ -64,12 +93,15 @@ app/
 │   ├── core.py              # 主入口，优先级处理逻辑
 │   ├── rag_enhanced.py      # 增强版RAG模块（Query Rewrite + Hybrid + Rerank）
 │   ├── faq.py               # 基础FAQ检索（兼容旧版）
-│   ├── session.py           # 状态机管理
+│   ├── state_machine.py     # 状态机管理（栈式状态管理）
+│   ├── intent_classifier.py # 意图分类器（12核心意图）
 │   ├── tools.py             # 工具注册与调用
 │   ├── risk_guard.py        # 风险拦截
-│   └── prompts.py           # 提示词模板
+│   ├── prompts.py           # 提示词模板
+│   └── semantic_cache.py    # 语义缓存
 ├── services/                # 业务服务
 │   ├── appointment.py       # 预约服务
+│   ├── doctor_service.py    # 医生服务
 │   └── database.py          # 数据库模型
 ├── wecom/                   # 企业微信集成
 │   ├── handler.py           # 消息处理器
@@ -129,7 +161,7 @@ curl "http://localhost:8000/dev/chat?msg=种植牙多少钱"
 | **RAGGenerator** | 基于上下文的回答生成 |
 | **LLMEvaluator** | LLM-as-a-Judge评估体系 |
 
-### 状态机 (`app/agent/session.py`)
+### 状态机 (`app/agent/state_machine.py`)
 
 | 状态 | 说明 | 可转换 |
 |------|------|--------|
@@ -137,6 +169,36 @@ curl "http://localhost:8000/dev/chat?msg=种植牙多少钱"
 | `appointment_collecting` | 预约信息收集 | → appointment_completed, consulting |
 | `handoff_pending` | 等待人工转接 | 不可转换 |
 | `appointment_completed` | 预约完成 | → consulting |
+
+**状态管理特性**:
+- 栈式状态管理，支持状态挂起和恢复
+- 增量槽位更新，不覆盖已有值
+- 多用户会话隔离
+
+### 意图分类器 (`app/agent/intent_classifier.py`)
+
+| 意图 | 关键词示例 | 对应层级 |
+|------|-----------|----------|
+| Symptom_Check | 牙齿松动、牙龈出血、牙疼 | MEDICAL_KNOWLEDGE |
+| Procedure_Explain | 根管治疗、种牙过程 | MEDICAL_KNOWLEDGE |
+| Process_Flow | 怎么挂号、就诊流程 | MEDICAL_KNOWLEDGE |
+| Price_Inquiry | 多少钱、价格、费用 | USER_DECISION |
+| Comparative_Analysis | 哪种好、对比、区别 | USER_DECISION |
+| Risk_Assessment | 风险、后遗症、成功率 | OBJECTION_HANDLING |
+| Fear_Relief | 疼不疼、害怕、紧张 | OBJECTION_HANDLING |
+| Price_Objection | 太贵、便宜点、优惠 | OBJECTION_HANDLING |
+| Trust_Verification | 医生资质、案例、职称 | OBJECTION_HANDLING |
+| Lead_Generation | 预约、挂号、安排时间 | BUSINESS_CONVERSION |
+| Logistics_Support | 地址、营业时间、停车 | BUSINESS_CONVERSION |
+| Out_of_Scope | 无关问题 | - |
+
+### 数据库模型 (`app/services/database.py`)
+
+| 表名 | 字段 | 说明 |
+|------|------|------|
+| **Doctor** | id, name, title, specialty, description | 医生信息 |
+| **Schedule** | id, doctor_id, date, time_slot, is_available | 排班信息 |
+| **Appointment** | id, user_id, doctor_id, date, time_slot, status, visit_notes | 预约信息 |
 
 ## 云服务器部署（Ubuntu + systemd + Nginx）
 
@@ -164,10 +226,10 @@ User=root
 WorkingDirectory=/root/project/wecom-ai-agent
 
 # ❗关键：环境变量不要加引号
-Environment=WECOM_TOKEN=svvikhfo7KonGCV
-Environment=WECOM_AES_KEY=OUYuidmBQa5XWr3ngBi7lXFj6PPM6cVIwFMk9vKJUfG
-Environment=WECOM_CORP_ID=ww2889b92a919d6de7
-Environment=QWEN_API_KEY=sk-a74ccef85bab443db01407504119889a
+Environment=WECOM_TOKEN=your_token
+Environment=WECOM_AES_KEY=your_aes_key
+Environment=WECOM_CORP_ID=your_corp_id
+Environment=QWEN_API_KEY=your_qwen_api_key  # 可选，用于增强RAG功能
 
 # ❗关键：监听0.0.0.0 + access log
 ExecStart=/root/project/wecom-ai-agent/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --access-log --log-level info
@@ -238,6 +300,7 @@ server {
 2. **职责分离**: 状态机管流程，LLM管语言，工具管操作
 3. **FSM优先**: 先检查状态规则，再调用LLM
 4. **防幻觉**: 严格的输出验证和prompt约束
+5. **可观测性**: 完整的日志记录和监控指标
 
 ## 许可证
 

@@ -4,6 +4,7 @@ requests
 wechatpy
 pycryptodome
 python-dotenv
+faiss-cpu
 
 # test
 pytest

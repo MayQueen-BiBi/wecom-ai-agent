@@ -1,0 +1,13 @@
+prefix=/Users/bimeiqiao/develop/wecom-ai-agent/.conda
+exec_prefix=/Users/bimeiqiao/develop/wecom-ai-agent/.conda
+libdir=/Users/bimeiqiao/develop/wecom-ai-agent/.conda/lib
+sharedlibdir=/Users/bimeiqiao/develop/wecom-ai-agent/.conda/lib
+includedir=/Users/bimeiqiao/develop/wecom-ai-agent/.conda/include
+
+Name: zlib
+Description: zlib compression library
+Version: 1.2.13
+
+Requires:
+Libs: -L${libdir} -L${sharedlibdir} -lz
+Cflags: -I${includedir}
