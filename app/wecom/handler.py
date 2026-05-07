@@ -70,11 +70,15 @@ async def verify(request: Request):
     nonce = request.query_params.get("nonce")
     echostr = request.query_params.get("echostr")
 
+    # 🟢 测试模式：只要有 echostr 直接返回
+    if echostr and not msg_signature:
+        return PlainTextResponse(echostr)
+
     print(
         TOKEN, AES_KEY, CORP_ID, msg_signature, timestamp, nonce, echostr
     )
+    # 🔴 企业微信正式模式：
     crypto = WeChatCrypto(TOKEN, AES_KEY, CORP_ID)
-
     try:
         echo_str = crypto.check_signature(
             msg_signature,
