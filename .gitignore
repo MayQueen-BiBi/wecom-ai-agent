@@ -10,6 +10,7 @@ logs/
 data/
 *.nc
 *.grib
+*.db
 
 # 模型
 *.pth
