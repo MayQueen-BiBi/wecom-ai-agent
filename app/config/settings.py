@@ -5,6 +5,11 @@ AES_KEY = os.getenv("WECOM_AES_KEY", "")
 CORP_ID = os.getenv("WECOM_CORP_ID", "")
 QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
 
+# 可选：会话状态（澄清计数等）持久化到 Redis
+REDIS_URL = os.getenv("REDIS_URL", "").strip()
+REDIS_KEY_PREFIX = os.getenv("REDIS_KEY_PREFIX", "wecom_ai:").strip()
+REDIS_SESSION_TTL = int(os.getenv("REDIS_SESSION_TTL", "604800"))
+
 
 def validate_settings() -> None:
     missing = []

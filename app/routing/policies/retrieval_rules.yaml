@@ -1,0 +1,8 @@
+# V1：与检索分数相关的路由
+version: 1
+rules:
+  - name: low_retrieval_clarify
+    condition:
+      retrieval_score_lt: 0.25
+      clarify_count_lt: 2
+    action: clarify

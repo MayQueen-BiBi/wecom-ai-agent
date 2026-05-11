@@ -7,11 +7,14 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.agent.core import run_agent, get_metrics, _extract_slots
-from app.agent.intent_classifier import intent_classifier
-from app.agent.state_machine import StateMachine, AgentState
-from app.agent.semantic_cache import semantic_cache
-from app.agent.faq import base_hybrid_retriever, FAQ_KB
+from app.api.entry import invoke_request
+from app.api.protocol import AgentRequest
+from app.core.cache.cache import semantic_cache
+from app.core.retrieval.faq import FAQ_KB, base_hybrid_retriever
+from app.core.runtime.state_machine import AgentState, StateMachine
+from app.observability.metrics import get_metrics
+from app.understanding.extraction import extract_slots as _extract_slots
+from app.understanding.intent_classifier import intent_classifier
 
 
 class TestIntentClassifier(unittest.TestCase):
@@ -209,17 +212,23 @@ class TestEndToEnd(unittest.TestCase):
         user_id = "test_user_e2e"
         
         # 测试症状咨询
-        response = run_agent(user_id, "我牙疼")
+        response = invoke_request(
+            AgentRequest(user_id=user_id, text="我牙疼", channel="test")
+        ).reply
         self.assertIsInstance(response, str)
         self.assertGreater(len(response), 0)
         
         # 测试价格咨询
-        response = run_agent(user_id, "种植牙多少钱")
+        response = invoke_request(
+            AgentRequest(user_id=user_id, text="种植牙多少钱", channel="test")
+        ).reply
         self.assertIsInstance(response, str)
         self.assertGreater(len(response), 0)
         
         # 测试预约引导
-        response = run_agent(user_id, "帮我预约")
+        response = invoke_request(
+            AgentRequest(user_id=user_id, text="帮我预约", channel="test")
+        ).reply
         self.assertIsInstance(response, str)
         self.assertGreater(len(response), 0)
     
@@ -236,7 +245,7 @@ class TestEndToEnd(unittest.TestCase):
         }
         
         user_id = "test_user_metrics"
-        run_agent(user_id, "我牙疼")
+        invoke_request(AgentRequest(user_id=user_id, text="我牙疼", channel="test"))
         
         metrics_result = get_metrics()
         self.assertIn("total_queries", metrics_result)

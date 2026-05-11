@@ -1,0 +1,9 @@
+# V1：与风险等级相关的路由（可编辑；加载顺序先于 retrieval / clarify）
+version: 1
+rules:
+  - name: high_risk_weak_evidence_clarify
+    condition:
+      risk_level_eq: "Level 3"
+      retrieval_score_lt: 0.35
+      clarify_count_lt: 2
+    action: clarify

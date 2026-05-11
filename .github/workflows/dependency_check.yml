@@ -1,0 +1,26 @@
+name: dependency-check
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  dependency-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install minimal deps (if project uses requirements)
+        run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Dependency firewall
+        run: python scripts/check_dependency.py
+      - name: Entry contract (no wecom router / no agent imports)
+        run: python scripts/check_entry_contract.py
+      - name: Production acceptance (L1–L5)
+        run: pytest tests/acceptance/ -q

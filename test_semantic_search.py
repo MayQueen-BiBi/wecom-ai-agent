@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # 测试语义检索效果
 
-from app.agent.faq import faq_search, expand_synonyms
+from app.core.retrieval.faq import expand_synonyms, faq_search
 
 # 测试同义词扩展
 print("=== 同义词扩展测试 ===")

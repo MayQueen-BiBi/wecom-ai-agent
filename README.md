@@ -45,66 +45,72 @@
 - 排班管理（可预约时间、已预约状态）
 - 智能医生推荐（基于症状和排班匹配）
 
-## 技术架构
+## 技术架构（当前生产链路）
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     企业微信入口                                  │
-│              (区分内部员工/外部用户)                              │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     FastAPI 服务                                │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     Agent Core (优先级处理)                      │
-│  1. 风险拦截 → 2. 人工转接 → 3. 退出意图 → 4. 预约流程          │
-│  5. RAG检索 → 6. LLM兜底                                       │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │
-        ┌───────────────────┼───────────────────┬───────────────┐
-        ▼                   ▼                   ▼               ▼
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐   ┌─────────────┐
-│  状态机     │    │   RAG模块   │    │ 意图分类器  │   │  语义缓存   │
-│ (FSM)       │    │ (增强版)    │    │(12意图)    │   │ (Semantic) │
-└─────────────┘    └─────────────┘    └─────────────┘   └─────────────┘
-        │                   │                   │
-        ▼                   ▼                   ▼
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│Session管理  │    │FAQ知识库    │    │  工具调用    │
-│ (多用户)    │    │BM25+向量    │    │ (ToolRegistry)│
-└─────────────┘    └─────────────┘    └─────────────┘
-                            │                   │
-                            ▼                   ▼
-                   ┌─────────────────────────────────┐
-                   │          SQLite DB              │
-                   │  Doctor | Schedule | Appointment│
-                   └─────────────────────────────────┘
+企业微信 / 浏览器 HTTP
+        │
+        ▼
+┌───────────────────┐     AgentRequest / AgentResponse（契约见 app/api/protocol.py）
+│  FastAPI (main)   │ ──► /wecom/callback、/dev/chat 等
+└─────────┬─────────┘
+          │
+          ▼
+┌───────────────────┐     超时、并发信号量、final_hook 日志
+│  app/api/entry    │
+└─────────┬─────────┘
+          │
+          ▼
+┌───────────────────┐     Graph Runtime（run_graph + DENTAL_GRAPH）
+│ app/workflows/    │ ──► nodes：intercept → understanding → … → execution
+└─────────┬─────────┘
+          │
+    ┌─────┴─────┬─────────────┐
+    ▼           ▼             ▼
+┌─────────┐ ┌─────────┐ ┌─────────┐
+│routing/  │ │execution│ │understanding
+│YAML策略 │ │core_exec│ │统一理解  │
+└─────────┘ └────┬────┘ └─────────┘
+                 │
+                 ▼
+          ┌─────────────┐
+          │ app/core/   │  LLM、工具、缓存、状态机、守卫、FAQ 数据
+          └──────┬──────┘
+                 │
+                 ▼
+          ┌─────────────┐
+          │ app/state/  │  AgentRunState + reducers + session_store
+          └─────────────┘
+                 │
+                 ▼
+          ┌─────────────┐
+          │ services/   │  SQLite：医生、排班、预约
+          └─────────────┘
 ```
+
+说明：**已不再使用 `app/agent`**；依赖防火墙见 `app/guards/dependency_guard.py` 与 `app/DEPENDENCY_RULES_FINAL.md`。
 
 ## 项目结构
 
 ```
 app/
-├── agent/                    # 核心Agent模块
-│   ├── core.py              # 主入口，优先级处理逻辑
-│   ├── rag_enhanced.py      # 增强版RAG模块（Query Rewrite + Hybrid + Rerank）
-│   ├── faq.py               # 基础FAQ检索（兼容旧版）
-│   ├── state_machine.py     # 状态机管理（栈式状态管理）
-│   ├── intent_classifier.py # 意图分类器（12核心意图）
-│   ├── tools.py             # 工具注册与调用
-│   ├── risk_guard.py        # 风险拦截
-│   ├── prompts.py           # 提示词模板
-│   └── semantic_cache.py    # 语义缓存
+├── api/                     # HTTP/集成统一入口（handle_request → workflow）
+│   └── entry.py
+├── workflows/               # Graph 编排（dental 等）
+├── execution/               # 纯执行（core_executor、RAG、牙科执行层）
+├── core/                    # LLM、工具、缓存、状态机、守卫、FAQ 数据
+├── routing/                 # 策略路由（YAML policy engine）
+├── state/                   # AgentRunState、reducers、session_store
+├── understanding/           # 意图与统一理解
+├── observability/           # trace、metrics、FlowTracker
+├── guards/                  # dependency_guard 等
 ├── services/                # 业务服务
 │   ├── appointment.py       # 预约服务
 │   ├── doctor_service.py    # 医生服务
 │   └── database.py          # 数据库模型
 ├── wecom/                   # 企业微信集成
-│   ├── handler.py           # 消息处理器
+│   ├── entry.py             # Webhook 解密 + 异常保护（主路径）
+│   ├── handler.py           # 对 entry 的 re-export（兼容旧 import）
 │   └── crypto.py            # 加解密
 ├── config/                  # 配置
 │   └── settings.py          # 环境变量配置
@@ -149,7 +155,7 @@ curl "http://localhost:8000/dev/chat?msg=种植牙多少钱"
 
 ## 核心组件说明
 
-### RAG增强模块 (`app/agent/rag_enhanced.py`)
+### RAG增强模块 (`app/execution/rag_enhanced.py`)
 
 | 组件 | 说明 |
 |------|------|
@@ -161,21 +167,11 @@ curl "http://localhost:8000/dev/chat?msg=种植牙多少钱"
 | **RAGGenerator** | 基于上下文的回答生成 |
 | **LLMEvaluator** | LLM-as-a-Judge评估体系 |
 
-### 状态机 (`app/agent/state_machine.py`)
+### 状态机 (`app/core/runtime/state_machine.py`)
 
-| 状态 | 说明 | 可转换 |
-|------|------|--------|
-| `consulting` | 咨询中 | → appointment_collecting, handoff_pending |
-| `appointment_collecting` | 预约信息收集 | → appointment_completed, consulting |
-| `handoff_pending` | 等待人工转接 | 不可转换 |
-| `appointment_completed` | 预约完成 | → consulting |
+业务层使用 **栈式 `AgentState` 枚举**（如 `MEDICAL_KNOWLEDGE`、`USER_DECISION`、`BUSINESS_CONVERSION` 等），与意图矩阵联动；**不是**旧的 `consulting/appointment_collecting` 命名。详见源码中 `CORE_TRANSITIONS` 与 `ConversationContext`。
 
-**状态管理特性**:
-- 栈式状态管理，支持状态挂起和恢复
-- 增量槽位更新，不覆盖已有值
-- 多用户会话隔离
-
-### 意图分类器 (`app/agent/intent_classifier.py`)
+### 意图分类器 (`app/understanding/intent_classifier.py`)
 
 | 意图 | 关键词示例 | 对应层级 |
 |------|-----------|----------|
@@ -296,11 +292,12 @@ server {
 
 ## 设计原则
 
-1. **最小权限原则**: LLM仅用于自然语言生成，禁止执行关键操作
-2. **职责分离**: 状态机管流程，LLM管语言，工具管操作
-3. **FSM优先**: 先检查状态规则，再调用LLM
-4. **防幻觉**: 严格的输出验证和prompt约束
-5. **可观测性**: 完整的日志记录和监控指标
+1. **统一入口**: 业务只经 `app/api/entry.handle_request(AgentRequest)`（契约版本 `CONTRACT_VERSION`）
+2. **编排与执行分离**: `workflows` 管图与节点；`execution` 管 state+action→结果；`routing` 仅 YAML 策略
+3. **状态可约简**: `AgentRunState` + reducer 写回；会话副作用由 workflow 收口
+4. **防幻觉与降级**: 检索守卫、critic、入口超时、`core/runtime/fallback` 高风险话术
+5. **可观测与验收**: `RequestTrace` / `final_hook`；分层测试见 `tests/smoke/`、`tests/acceptance/`
+6. **依赖防火墙**: `scripts/check_dependency.py`、`scripts/check_entry_contract.py`（CI 已挂）
 
 ## 许可证
 

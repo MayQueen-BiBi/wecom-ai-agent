@@ -1,0 +1,8 @@
+# V1：与澄清轮次相关的路由（弱检索 + 已达澄清上限 → 降级）
+version: 1
+rules:
+  - name: clarify_rounds_exhausted_low_retrieval
+    condition:
+      clarify_count_gte: 2
+      retrieval_score_lt: 0.25
+    action: degrade

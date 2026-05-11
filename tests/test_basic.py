@@ -7,10 +7,10 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.agent.intent_classifier import intent_classifier
-from app.agent.state_machine import StateMachine, AgentState
-from app.agent.core import _extract_slots
-from app.agent.faq import base_hybrid_retriever
+from app.understanding.intent_classifier import intent_classifier
+from app.core.retrieval.faq import base_hybrid_retriever
+from app.core.runtime.state_machine import AgentState, StateMachine
+from app.understanding.extraction import extract_slots as _extract_slots
 
 
 class TestIntentClassifier(unittest.TestCase):

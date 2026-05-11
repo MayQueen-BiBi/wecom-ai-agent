@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # 诊断检索问题
 
-from app.agent.faq import FAQ_KB, BM25Retriever, VectorRetriever, HybridRetriever
+from app.core.retrieval.faq import BM25Retriever, FAQ_KB, HybridRetriever, VectorRetriever
 
 query = "我的牙齿松动了怎么办"
 print(f"分析查询: {query}")

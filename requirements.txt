@@ -1,10 +1,14 @@
 fastapi
+PyYAML>=6
 uvicorn
 requests
 wechatpy
 pycryptodome
 python-dotenv
 faiss-cpu
+langgraph
+langchain-core
+redis>=5
 
 # test
 pytest
